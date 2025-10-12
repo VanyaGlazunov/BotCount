@@ -1,15 +1,35 @@
 use std::{
-    collections::{HashMap, VecDeque}, convert::Infallible, env, sync::Arc, usize
+    collections::{HashMap, VecDeque},
+    convert::Infallible,
+    sync::Arc,
 };
 
+use clap::Parser;
 use serde_json::json;
 use tokio::sync::Mutex;
 
 use serde::Deserialize;
-use warp::{
-    Filter,
-    reject::Rejection,
-};
+use warp::{Filter, reject::Rejection};
+
+/// Bot detection service that monitors user events and identifies potential bots
+/// based on event frequency within a time window.
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Time window in seconds for bot detection
+    /// Events older than this will be excluded from analysis
+    #[arg(short, long)]
+    timestamp_threshold: usize,
+
+    /// Number of events required to classify a user as a bot
+    /// If a user generates this many events within the time window, they're considered a bot
+    #[arg(short, long)]
+    event_count_limit: usize,
+
+    /// Port to run the server on
+    #[arg(short, long, default_value_t = 8080)]
+    port: u16,
+}
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 struct Event {
@@ -42,13 +62,12 @@ impl BotCounter {
 
     fn add_event(&mut self, event: Event) {
         self.events_timestamps.push_back(event);
-        self.user_events_count
+        let count = self
+            .user_events_count
             .entry(event.user_id)
             .and_modify(|c| *c += 1)
             .or_insert(1);
-        if let Some(count) = self.user_events_count.get(&event.user_id)
-            && *count == self.event_count_limit
-        {
+        if *count == self.event_count_limit {
             self.bot_count += 1;
         }
     }
@@ -77,7 +96,7 @@ type DB = Arc<Mutex<BotCounter>>;
 
 async fn add_event(event: Event, db: DB) -> Result<impl warp::Reply, Rejection> {
     db.lock().await.add_event(event);
-    Ok(warp::http::StatusCode::CREATED)
+    Ok(warp::http::StatusCode::OK)
 }
 
 async fn get_count(query: TimestampQuery, db: DB) -> Result<impl warp::Reply, Rejection> {
@@ -93,10 +112,12 @@ fn with_db(db: DB) -> impl Filter<Extract = (DB,), Error = Infallible> + Clone {
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<_> = env::args().skip(1).collect();
-    let timestamp_threshold = args[1].parse::<usize>().unwrap();
-    let event_count_limit = args[2].parse::<usize>().unwrap();
-    let db = Arc::new(Mutex::new(BotCounter::new(timestamp_threshold, event_count_limit)));
+    let args = Args::parse();
+
+    let db = Arc::new(Mutex::new(BotCounter::new(
+        args.timestamp_threshold,
+        args.event_count_limit,
+    )));
 
     let add_event_route = warp::path("event")
         .and(warp::post())
@@ -112,6 +133,6 @@ async fn main() {
 
     let routes = add_event_route.or(get_count_route);
 
-    println!("Starting server on http://127.0.0.1:3030");
-    warp::serve(routes).run(([127, 0, 0, 1], 3080)).await
+    println!("Starting server on http://127.0.0.1:{}", args.port);
+    warp::serve(routes).run(([127, 0, 0, 1], args.port)).await
 }
