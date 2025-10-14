@@ -88,14 +88,18 @@ impl BotCounter {
 
             self.events_timestamps.pop_front();
 
-            self.user_events_count
+            let count = self
+                .user_events_count
                 .entry(user_id)
-                .and_modify(|c| *c -= 1);
+                .and_modify(|c| *c -= 1)
+                .or_default();
 
-            if let Some(count) = self.user_events_count.get(&user_id)
-                && *count == self.event_count_limit - 1
-            {
+            if *count == self.event_count_limit - 1 {
                 self.bot_count -= 1;
+            }
+
+            if *count == 0 {
+                self.user_events_count.remove(&user_id);
             }
         }
 
